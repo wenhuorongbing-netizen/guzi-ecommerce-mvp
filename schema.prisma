@@ -1,0 +1,134 @@
+// schema.prisma
+generator client {
+  provider             = "prisma-client-py"
+  recursive_type_depth = 5
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Epic 1: Secure & Lightweight Auth
+model User {
+  id           String   @id @default(uuid())
+  nickname     String   @unique
+  hashedPin    String   // 存储 bcrypt Hash 后的 6位数字 PIN
+  role         UserRole @default(BUYER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  orders       Order[]
+}
+
+enum UserRole {
+  BUYER
+  ADMIN
+}
+
+// 场次/批次
+model Event {
+  id          String    @id @default(uuid())
+  name        String
+  status      EventStatus @default(DRAFT)
+  startTime   DateTime?
+  endTime     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  products    Product[]
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  ACTIVE
+  CLOSED
+}
+
+// 商品：包含热区坐标 (Human-in-the-loop)
+model Product {
+  id          String   @id @default(uuid())
+  eventId     String
+  event       Event    @relation(fields: [eventId], references: [id])
+  name        String
+  price       Decimal  @db.Decimal(10, 2)
+  stock       Int      @default(0)
+
+  imageUrl    String?
+  x           Float?
+  y           Float?
+
+  orderItems  OrderItem[]
+}
+
+// Epic 4: Phased Billing - 解耦 Order 与 Payment
+model Order {
+  id               String      @id @default(uuid())
+  userId           String
+  user             User        @relation(fields: [userId], references: [id])
+
+  // 订单级金额（商品总价，可能不含后续邮费）
+  totalAmount      Decimal     @db.Decimal(10, 2)
+  status           OrderStatus @default(CREATED)
+
+  // 对账暗号：买家唯一识别码，填在闲鱼备注
+  reconciliationCode String    @unique
+
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  items            OrderItem[]
+  payments         Payment[]
+}
+
+model OrderItem {
+  id        String  @id @default(uuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id])
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int     @default(1)
+  price     Decimal @db.Decimal(10, 2) // 快照价格
+}
+
+// 账单/支付单：支持多次支付（定金、尾款）
+model Payment {
+  id                String        @id @default(uuid())
+  orderId           String
+  order             Order         @relation(fields: [orderId], references: [id])
+  paymentType       PaymentType   // 定金 DEPOSIT 还是 尾款 BALANCE
+
+  expectedAmount    Decimal       @db.Decimal(10, 2) // 应付金额
+  actualPaidAmount  Decimal?      @db.Decimal(10, 2) // 团长审核时填入的实际到账金额
+  differenceAmount  Decimal?      @db.Decimal(10, 2) // 差异金额 (少付记录正数缺口)
+
+  externalOrderId   String?       // 买家去闲鱼拍下后回填的订单号
+  status            PaymentStatus @default(AWAITING_PAYMENT)
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+}
+
+enum PaymentType {
+  DEPOSIT
+  BALANCE_AND_SHIPPING
+}
+
+enum OrderStatus {
+  CREATED               // 初始状态
+  AWAITING_PAYMENT      // (软锁定) 等待提交付款单号
+  PENDING_AUDIT         // (硬锁定) 单号已提交，等待团长审核
+  PAYMENT_MISMATCH      // 审核异常：发现跑单或少付钱
+  PAID_PARTIALLY        // 定金已付，尾款待付
+  PAID_COMPLETELY       // 全部付清
+  SHIPPED               // 已发货
+  CANCELLED             // 2小时超时释放 或 手动取消
+}
+
+enum PaymentStatus {
+  AWAITING_PAYMENT
+  PENDING_AUDIT
+  AUDIT_PASSED
+  AUDIT_FAILED_MISMATCH
+}
