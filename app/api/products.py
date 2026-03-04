@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from decimal import Decimal
 from app.core.db import db
+from app.api.auth import get_current_admin
 import logging
 
 router = APIRouter()
@@ -22,7 +23,7 @@ class BatchProductsRequest(BaseModel):
     hotspots: List[HotspotDraft]
 
 @router.post("/batch")
-async def create_batch_products(req: BatchProductsRequest):
+async def create_batch_products(req: BatchProductsRequest, admin_user = Depends(get_current_admin)):
     """
     Receives JSON containing hotspots mapped from the Image Tagging UI
     and bulk inserts them as Product entities.

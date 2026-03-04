@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.core.db import db
+from app.api.auth import get_current_user
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -12,7 +13,7 @@ class VerifyPaymentRequest(BaseModel):
     external_order_id: str
 
 @router.post("/verify-payment")
-async def verify_payment(req: VerifyPaymentRequest):
+async def verify_payment(req: VerifyPaymentRequest, current_user = Depends(get_current_user)):
     """
     Called by the Buyer after they've checked out on Xianyu and want to submit their external order ID.
     Transitions the Order state from AWAITING_PAYMENT to PENDING_AUDIT.
@@ -23,6 +24,9 @@ async def verify_payment(req: VerifyPaymentRequest):
 
         if not order:
             raise HTTPException(status_code=404, detail="Order not found.")
+
+        if order.userId != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this order.")
 
         if order.status == "CANCELLED":
             raise HTTPException(status_code=400, detail="Order has already expired and been cancelled.")
@@ -57,6 +61,31 @@ async def verify_payment(req: VerifyPaymentRequest):
             )
 
         return {"status": "success", "message": "Payment external ID submitted. Awaiting Admin Audit."}
+
+@router.get("/my-orders")
+async def get_my_orders(current_user = Depends(get_current_user)):
+    """
+    Allows a buyer to query their own orders safely.
+    """
+    try:
+        orders = await db.order.find_many(
+            where={
+                "userId": current_user.id
+            },
+            include={
+                "items": {
+                    "include": {
+                        "product": True
+                    }
+                },
+                "payments": True
+            },
+            order={"createdAt": "desc"}
+        )
+        return {"status": "success", "data": orders}
+    except Exception as e:
+        logger.error(f"Failed fetching orders for user {current_user.id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/admin/trigger-ttl-cron")
 async def manual_trigger_ttl():

@@ -1,18 +1,16 @@
 import logging
+import csv
+import io
 from typing import Optional
 from decimal import Decimal
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.core.db import db
+from app.api.auth import get_current_admin
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# --- Dummy Dependency for MVP ---
-async def get_current_admin():
-    # In a real app, this parses a JWT and validates `role == 'ADMIN'`
-    # We'll return a hardcoded admin User ID for the MVP backend skeleton
-    return "admin-uuid-1234"
 
 # --- Models ---
 class UpdateProfileRequest(BaseModel):
@@ -24,13 +22,13 @@ class ConfirmPaymentRequest(BaseModel):
 
 # --- Profile API ---
 @router.patch("/profile")
-async def update_admin_profile(req: UpdateProfileRequest, admin_id: str = Depends(get_current_admin)):
+async def update_admin_profile(req: UpdateProfileRequest, admin_user = Depends(get_current_admin)):
     """
     Allows the Admin to update their trust building properties: bio (rules) and Xianyu profile link.
     """
     try:
         updated_user = await db.user.update(
-            where={"id": admin_id},
+            where={"id": admin_user.id},
             data={
                 "bio": req.bio,
                 "xianyuHomeUrl": req.xianyuHomeUrl
@@ -44,7 +42,7 @@ async def update_admin_profile(req: UpdateProfileRequest, admin_id: str = Depend
 
 # --- Audit Dashboard APIs ---
 @router.get("/orders/pending-audit")
-async def get_pending_audit_orders(admin_id: str = Depends(get_current_admin)):
+async def get_pending_audit_orders(admin_user = Depends(get_current_admin)):
     """
     Returns all orders where buyers have submitted an external Xianyu order ID,
     waiting for the admin to confirm the payment amount.
@@ -80,7 +78,7 @@ async def get_pending_audit_orders(admin_id: str = Depends(get_current_admin)):
 
 
 @router.post("/orders/{order_id}/confirm-payment")
-async def confirm_payment(order_id: str, req: ConfirmPaymentRequest, admin_id: str = Depends(get_current_admin)):
+async def confirm_payment(order_id: str, req: ConfirmPaymentRequest, admin_user = Depends(get_current_admin)):
     """
     Admin confirms the actual paid amount against the external order ID.
     Transitions order to PAID and creates the Payment record.
@@ -133,3 +131,67 @@ async def confirm_payment(order_id: str, req: ConfirmPaymentRequest, admin_id: s
                 "status": "AUDIT_PASSED"
             })
             return {"status": "success", "message": "Payment confirmed and order marked as PAID."}
+
+# --- Export API ---
+@router.get("/events/{event_id}/export")
+async def export_paid_orders_csv(event_id: str, admin_user = Depends(get_current_admin)):
+    """
+    Generates a CSV report of all PAID orders for a specific event.
+    """
+    try:
+        # Find all PAID orders for this event
+        orders = await db.order.find_many(
+            where={
+                "status": "PAID",
+                "items": {
+                    "some": {
+                        "product": {
+                            "eventId": event_id
+                        }
+                    }
+                }
+            },
+            include={
+                "user": True,
+                "items": {
+                    "include": {
+                        "product": True
+                    }
+                }
+            }
+        )
+
+        if not orders:
+            raise HTTPException(status_code=404, detail="No paid orders found for this event.")
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Write CSV Header
+        writer.writerow(["Buyer Nickname", "Xianyu Order ID", "Total Amount (¥)", "Purchased Items"])
+
+        for order in orders:
+            buyer_name = order.user.nickname if order.user else "Unknown"
+            xianyu_id = order.externalOrderId or "N/A"
+            total = f"{order.totalAmount:.2f}"
+
+            # Format items list: "ItemA x2, ItemB x1"
+            items_str = ", ".join(
+                [f"{item.product.name} x{item.quantity}" for item in order.items if item.product]
+            )
+
+            writer.writerow([buyer_name, xianyu_id, total, items_str])
+
+        output.seek(0)
+
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=export_event_{event_id}.csv"}
+        )
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Failed to generate CSV export for event {event_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error generating export.")
