@@ -54,7 +54,11 @@ model Product {
   name        String   // 角色名或物品名
   price       Decimal  @db.Decimal(10, 2)
   stock       Int      @default(0) // 实际库存
-  imageUrl    String?  // 切片图片或热区图片
+
+  // 交互式打点热区信息
+  imageUrl    String?  // 原图 URL
+  x           Float?   // 热区中心相对 X 坐标 (0-100)
+  y           Float?   // 热区中心相对 Y 坐标 (0-100)
 
   orderItems  OrderItem[]
 }
@@ -195,109 +199,133 @@ async def enqueue_order_creation(user_id: str, product_id: str, quantity: int):
     pass
 ```
 
-## 3. AI Vision Implementation (AI 智能上架)
+## 3. Human-in-the-loop (HITL) 上架方案设计
 
-当团长上传一张包含几十个吧唧的阵型图时，我们需要调用多模态模型来自动识别并返回每个物品的坐标，以减轻团长的上架负担。
-以下使用 FastAPI 处理图片上传并调用兼容 OpenAI API 的视觉模型（如 GPT-4V 或支持该协议的本地大模型部署）。
+鉴于多模态大模型在处理密集重叠的二次元徽章、立牌等周边时，容易出现严重的幻觉（漏识别、角色认错、类别搞错），导致团长需要花费大量时间纠错。我们决定放弃全自动 AI 识别，采用 Human-in-the-loop (HITL) 方案。
 
-```python
-# app/api/vision.py
-import base64
-from fastapi import APIRouter, UploadFile, File, HTTPException
-import httpx
-import os
+### 方案评估：Option 1 vs Option 2
 
-router = APIRouter()
+* **Option 1: 交互式打点/切图 (Image Tagging UI)**
+  * **原理**: 纯前端实现。用户上传大图后，在图片上点击创建热区（Hotspot），并手动输入商品信息。
+  * **开发成本**: 极低。无需部署任何复杂的后端视觉算法环境，完全解耦。
+  * **准确度**: 100%。完全由团长主观控制，不会有任何“误判”。
+* **Option 2: 轻量级 CV 辅助裁剪 (OpenCV / YOLO Object Detection)**
+  * **原理**: 后端跑 OpenCV 边缘检测或轻量级 YOLO，返回边界框给前端，前端切成卡片让用户填。
+  * **开发成本**: 中高。需要处理复杂的背景干扰（例如吧唧托、背景布），且密集摆放时的轮廓粘连会导致 OpenCV 提取失败，仍需大量人工干预。
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-api-key")
-VISION_API_URL = os.getenv("VISION_API_URL", "https://api.openai.com/v1/chat/completions")
+**结论推荐：采用 Option 1 (交互式打点 UI) 作为 MVP 方案。** 它不仅开发最快，架构最轻（直接移除了繁重的 CV/AI 服务部署），而且符合小红书等平台用户的使用直觉。
 
-def encode_image(image_bytes: bytes) -> str:
-    return base64.b64encode(image_bytes).decode("utf-8")
+### 前端交互核心逻辑 (React + Zustand)
 
-@router.post("/analyze-image")
-async def analyze_merch_image(file: UploadFile = File(...)):
-    """
-    接收团长上传的图片，调用大模型识别图内周边，返回坐标和分类估算。
-    """
-    # 1. 验证图片格式和大小
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image")
+买家和团长将共享这一套基于热区坐标的视觉交互。
 
-    image_bytes = await file.read()
-    if len(image_bytes) > 10 * 1024 * 1024: # 10MB limit
-        raise HTTPException(status_code=400, detail="Image size exceeds 10MB limit")
+**1. 状态管理 (Zustand)**
+负责管理当前图片上的所有打点信息。
 
-    base64_image = encode_image(image_bytes)
+```typescript
+// store/taggingStore.ts
+import { create } from 'zustand'
 
-    # 2. 组装 Prompt
-    # 强调返回 JSON 格式以及需要的字段
-    prompt = (
-        "你是一个二次元周边（吧唧、立牌等）识别助手。请分析这张图，"
-        "识别图中所有的独立商品，并以严格的 JSON 数组格式返回。"
-        "每个对象包含：\\n"
-        "1. 'category' (字符串，如 '徽章', '立牌', '色纸')\\n"
-        "2. 'bbox' (数组 [x, y, width, height]，代表相对图片的百分比坐标，0-100)\\n"
-        "3. 'description' (简短描述人物特征或颜色)。\\n"
-        "不要返回任何 JSON 以外的解释性文本。"
-    )
+export interface Hotspot {
+  id: string; // 唯一标识，前端可先用 uuid 生成
+  x: number;  // 相对图片的百分比 X 坐标
+  y: number;  // 相对图片的百分比 Y 坐标
+  name: string;
+  price: number;
+  stock: number;
+}
 
-    payload = {
-        "model": "gpt-4-vision-preview", # 或配置为你使用的模型
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{file.content_type};base64,{base64_image}"
-                        }
-                    }
-                ]
-            }
-        ],
-        "max_tokens": 1500,
-        "temperature": 0.1 # 降低温度以保证格式化输出的稳定性
-    }
+interface TaggingState {
+  imageUrl: string | null;
+  hotspots: Hotspot[];
+  activeHotspotId: string | null; // 当前正在编辑的热区
+  setImage: (url: string) => void;
+  addHotspot: (hotspot: Hotspot) => void;
+  updateHotspot: (id: string, updates: Partial<Hotspot>) => void;
+  removeHotspot: (id: string) => void;
+  setActiveHotspot: (id: string | null) => void;
+}
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENAI_API_KEY}"
-    }
+export const useTaggingStore = create<TaggingState>((set) => ({
+  imageUrl: null,
+  hotspots: [],
+  activeHotspotId: null,
+  setImage: (url) => set({ imageUrl: url, hotspots: [], activeHotspotId: null }),
+  addHotspot: (hotspot) => set((state) => ({
+    hotspots: [...state.hotspots, hotspot],
+    activeHotspotId: hotspot.id // 添加后默认选中
+  })),
+  updateHotspot: (id, updates) => set((state) => ({
+    hotspots: state.hotspots.map(h => h.id === id ? { ...h, ...updates } : h)
+  })),
+  removeHotspot: (id) => set((state) => ({
+    hotspots: state.hotspots.filter(h => h.id !== id),
+    activeHotspotId: state.activeHotspotId === id ? null : state.activeHotspotId
+  })),
+  setActiveHotspot: (id) => set({ activeHotspotId: id })
+}))
+```
 
-    # 3. 调用多模态模型 API
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(VISION_API_URL, headers=headers, json=payload)
-            response.raise_for_status()
+**2. 核心组件交互逻辑 (React)**
+用户点击图片，计算相对坐标并新增热区。
 
-            result_data = response.json()
-            content = result_data["choices"][0]["message"]["content"]
+```tsx
+// components/ImageTagger.tsx
+import React, { useRef } from 'react';
+import { useTaggingStore } from '../store/taggingStore';
+import { v4 as uuidv4 } from 'uuid';
 
-            # 这里需要一个安全的 JSON 解析逻辑，剥离 markdown 代码块标签 (```json ... ```)
-            # 为了 MVP 简化，我们假设模型完全遵循指令返回了纯净的 JSON 字符串
-            import json
+export const ImageTagger = () => {
+  const { imageUrl, hotspots, addHotspot, setActiveHotspot } = useTaggingStore();
+  const imageRef = useRef<HTMLImageElement>(null);
 
-            # 清理可能的 markdown 标记
-            clean_content = content.strip()
-            if clean_content.startswith("```json"):
-                clean_content = clean_content[7:]
-            if clean_content.endswith("```"):
-                clean_content = clean_content[:-3]
+  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
+    if (!imageRef.current) return;
 
-            items = json.loads(clean_content.strip())
+    // 获取点击位置相对于图片的百分比坐标
+    const rect = imageRef.current.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
 
-            return {
-                "status": "success",
-                "items": items
-            }
+    // 创建新的热区草稿
+    addHotspot({
+      id: uuidv4(),
+      x,
+      y,
+      name: '',
+      price: 0,
+      stock: 1
+    });
+  };
 
-    except httpx.HTTPError as e:
-        # logger.error(f"Vision API request failed: {e}")
-        raise HTTPException(status_code=502, detail="Failed to communicate with Vision AI service.")
-    except Exception as e:
-        # logger.error(f"Failed to parse AI response: {e}")
-        raise HTTPException(status_code=500, detail="Failed to parse AI response. Please try again.")
+  return (
+    <div className="relative inline-block">
+      {imageUrl && (
+        <img
+          ref={imageRef}
+          src={imageUrl}
+          alt="Merch Layout"
+          onClick={handleImageClick}
+          className="max-w-full cursor-crosshair rounded shadow-lg"
+        />
+      )}
+
+      {/* 渲染热区锚点 */}
+      {hotspots.map((hotspot) => (
+        <div
+          key={hotspot.id}
+          className="absolute w-6 h-6 -ml-3 -mt-3 bg-white border-2 border-red-500 rounded-full cursor-pointer hover:scale-110 transition-transform shadow-md"
+          style={{ left: `${hotspot.x}%`, top: `${hotspot.y}%` }}
+          onClick={(e) => {
+            e.stopPropagation(); // 阻止触发底图的点击事件
+            setActiveHotspot(hotspot.id);
+          }}
+        >
+          {/* 这里可以嵌套一个弹出式表单（Popover/Tooltip），
+              如果 activeHotspotId === hotspot.id 则显示输入框 */}
+        </div>
+      ))}
+    </div>
+  );
+};
 ```
