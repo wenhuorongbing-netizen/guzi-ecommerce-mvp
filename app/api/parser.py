@@ -39,7 +39,7 @@ async def extract_items(req: ExtractTextRequest):
     user_prompt = f"【订单文本】：\n{req.reference_text}\n\n请提取并输出纯 JSON 数组："
 
     payload = {
-        "model": "gpt-3.5-turbo", # Use a fast, cheap model for text processing
+        "model": "llama3-8b", # Use a fast, cheap model for text processing
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}

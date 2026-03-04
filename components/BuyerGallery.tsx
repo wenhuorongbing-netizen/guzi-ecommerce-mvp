@@ -87,7 +87,11 @@ export const BuyerGallery: React.FC<BuyerGalleryProps> = ({ imageUrl, products }
                 <div
                   key={product.id}
                   className="absolute"
-                  style={{ left: `${product.x}%`, top: `${product.y}%` }}
+                  style={{
+                    left: `${product.x}%`,
+                    top: `${product.y}%`,
+                    transform: 'translate(-50%, -50%)' // Handle centering here to avoid framer-motion conflicts
+                  }}
                 >
                   <motion.button
                     whileTap={!isOutOfStock ? { scale: 0.85, y: -5 } : {}}
@@ -96,7 +100,7 @@ export const BuyerGallery: React.FC<BuyerGalleryProps> = ({ imageUrl, products }
                     disabled={isOutOfStock}
                     className={`
                       relative group flex flex-col items-center justify-center
-                      min-w-[44px] min-h-[44px] -translate-x-1/2 -translate-y-1/2
+                      min-w-[44px] min-h-[44px]
                       rounded-xl shadow-xl border border-white/40
                       backdrop-blur-md overflow-visible touch-manipulation
                       transition-opacity duration-300
@@ -177,6 +181,10 @@ export const BuyerGallery: React.FC<BuyerGalleryProps> = ({ imageUrl, products }
           <motion.button
             whileTap={{ scale: 0.95 }}
             disabled={totalItems === 0}
+            onClick={() => {
+                // In a real app, this opens a modal or navigates to a checkout route
+                alert(`[Checkout Guide UI]\n\nTotal: ¥${totalPrice.toFixed(2)}\nReconciliation Code: USER_X_992\n\n1. Scan Xianyu QR Code to Pay\n2. Put 'USER_X_992' in Xianyu Notes\n3. Enter Xianyu Order ID below: [ ____________ ]`);
+            }}
             className="flex-1 max-w-[200px] bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-gray-300 disabled:to-gray-400 disabled:text-gray-500 disabled:cursor-not-allowed text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-blue-500/30 transition-all text-sm uppercase tracking-wider"
           >
             Checkout

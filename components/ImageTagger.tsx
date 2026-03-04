@@ -30,6 +30,27 @@ export const ImageTagger = () => {
 
   const imageRef = useRef<HTMLImageElement>(null);
 
+  // Magnifier State
+  const [showMagnifier, setShowMagnifier] = React.useState(false);
+  const [magnifierPos, setMagnifierPos] = React.useState({ x: 0, y: 0 });
+  const [bgPos, setBgPos] = React.useState({ x: 0, y: 0 });
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLImageElement>) => {
+    if (!activePendingItemId || !imageRef.current) return;
+
+    // Determine cursor position relative to the image
+    const rect = imageRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    // Percentage for background position inside magnifier
+    const bgX = (x / rect.width) * 100;
+    const bgY = (y / rect.height) * 100;
+
+    setMagnifierPos({ x: e.clientX, y: e.clientY });
+    setBgPos({ x: bgX, y: bgY });
+  };
+
   const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
     if (!imageRef.current) return;
 
@@ -59,7 +80,9 @@ export const ImageTagger = () => {
   };
 
   return (
-    <div className="relative inline-block border rounded bg-gray-50 p-2 shadow-sm min-h-[400px] w-full flex items-center justify-center overflow-hidden">
+    <div
+      className="relative inline-block border rounded bg-gray-50 p-2 shadow-sm min-h-[400px] w-full flex items-center justify-center overflow-hidden"
+    >
       {!imageUrl ? (
         <div className="flex flex-col items-center justify-center h-full text-gray-400 p-10">
           <svg className="w-12 h-12 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -91,9 +114,33 @@ export const ImageTagger = () => {
                     src={imageUrl}
                     alt="Merch Drop Layout"
                     onClick={handleImageClick}
+                    onMouseMove={handleMouseMove}
+                    onMouseEnter={() => activePendingItemId && setShowMagnifier(true)}
+                    onMouseLeave={() => setShowMagnifier(false)}
                     className={`max-w-full rounded shadow ${activePendingItemId ? 'cursor-crosshair' : 'cursor-default'}`}
                     style={{ maxHeight: '75vh', width: 'auto' }}
                   />
+
+                  {/* Magnifier Glass Overlay (only visible when dropping a chip) */}
+                  {showMagnifier && activePendingItemId && imageUrl && (
+                    <div
+                      className="fixed z-50 pointer-events-none rounded-full border-2 border-blue-500 shadow-xl overflow-hidden bg-no-repeat"
+                      style={{
+                        width: '120px',
+                        height: '120px',
+                        left: `${magnifierPos.x - 60}px`,
+                        top: `${magnifierPos.y - 60}px`,
+                        backgroundImage: `url(${imageUrl})`,
+                        backgroundPosition: `${bgPos.x}% ${bgPos.y}%`,
+                        backgroundSize: `${imageRef.current ? imageRef.current.width * 2 : '200'}%`, // 2x zoom
+                      }}
+                    >
+                      {/* Crosshair inside magnifier */}
+                      <div className="absolute inset-0 m-auto w-4 h-4 text-blue-500 opacity-50 flex items-center justify-center">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14m-7-7h14" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Render Hotspots */}
                   {hotspots.map((hotspot) => {

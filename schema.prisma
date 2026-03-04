@@ -74,6 +74,7 @@ model Order {
 
   // 对账暗号：买家唯一识别码，填在闲鱼备注
   reconciliationCode String    @unique
+  externalOrderId    String?   // 闲鱼订单号 (Added in Sprint 3)
 
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
