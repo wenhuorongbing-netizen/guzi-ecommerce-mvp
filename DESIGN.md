@@ -1,8 +1,52 @@
-# 谷子代购对账系统 MVP 核心架构设计
+# 谷子代购对账系统 MVP 核心架构设计 (Hardened)
 
-## 1. Database Schema Design (Prisma)
+## 1. System Architecture Diagram & Tech Stack
 
-本项目采用 PostgreSQL 作为主存储，Prisma 作为 ORM。以下是核心数据表结构，重点体现订单的状态机转换以及与第三方二手交易平台（如闲鱼）的对账关联。
+为满足“高并发抢单”、“两段式账单对账”、“轻量安全鉴权”以及“严格库存防超卖”的业务需求，本系统采用前后端分离架构。
+
+**核心技术栈推荐:**
+
+* **前端**: Next.js (App Router), React, Zustand (状态管理), TailwindCSS.
+* **后端**: Python (FastAPI), Pydantic (数据校验), PyJWT (轻量级会话维持).
+* **数据库**: PostgreSQL (主存储，支持强事务隔离).
+* **ORM**: Prisma Client Python.
+* **缓存与并发控制**: Redis (存储高并发时的活动库存、TTL 软锁定队列).
+* **异步任务/补偿机制**: Celery + Redis (或更轻量级的 APScheduler) 用于处理超时未支付的库存释放。
+
+**Text-based Architecture Flow:**
+
+```text
+[ Buyer (Next.js UI) ] --(1. Login/Register: Nickname + PIN)--> [ Auth API (JWT) ]
+       |
+  (2. Click Hotspot to Claim)
+       v
+[ FastAPI: Inventory API ] --(Lua Script: Atomic Decr)--> [ Redis (Soft Lock: 2H TTL) ]
+       |                                                       |
+  (3. Create Order: AWAITING_PAYMENT)                          | (5. Timeout? Release Stock)
+       v                                                       v
+[ PostgreSQL (Prisma) ] <--(Async Compensation Cron)----[ Redis/Celery Task Queue ]
+       |
+  (4. Buyer Submits Xianyu Order ID)
+       v
+[ FastAPI: Order API ] --(Update Status to PENDING_AUDIT)--> [ Redis (Hard Lock) ]
+       |
+  (6. Admin Audits Actual Paid Amount)
+       v
+[ FastAPI: Admin API ] --(Compare Amount & Audit Payment)--> [ PostgreSQL (Update Status) ]
+```
+
+### TTL-based Inventory Locking (库存防跑单机制)
+
+我们采用 **Soft Lock (软锁定)** 和 **Hard Lock (硬锁定)** 相结合的状态机设计：
+
+1. 买家抢到后，Redis `DECR` 操作成功，生成 `AWAITING_PAYMENT` 的 `Order`，此时库存为 **“软锁定”**。
+2. 同时向延迟队列（如 Celery 的 ETA task 或 RabbitMQ 延迟死信队列）发送一条消息：`expire_order(order_id)`，延迟时间设为 2 小时。
+3. **情景 A (合规):** 买家在 2 小时内调用 `submit_external_order_id` 回填闲鱼单号。系统将订单转为 `PENDING_AUDIT`，此时这部分库存转为 **“硬锁定”**。
+4. **情景 B (跑单):** 买家未能在 2 小时内回填。2 小时后，异步补偿任务 `expire_order` 触发。任务检查数据库该订单状态，若仍为 `AWAITING_PAYMENT`，则将其置为 `CANCELLED`，并通过 Redis `INCR` 把库存加回去。
+
+## 2. Robust Database Schema (Prisma)
+
+为应对“定金+尾款”两段式账单设计，并且加固鉴权机制，我们重构了核心 Schema：
 
 ```prisma
 // schema.prisma
@@ -15,24 +59,30 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// 用户：由于是基于简易昵称的轻量级系统，前期仅保存必要信息
+// Epic 1: Secure & Lightweight Auth
 model User {
-  id        String   @id @default(uuid())
-  nickname  String   @unique
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(uuid())
+  nickname     String   @unique
+  hashedPin    String   // 存储 bcrypt Hash 后的 6位数字 PIN
+  role         UserRole @default(BUYER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  orders    Order[]
+  orders       Order[]
 }
 
-// 场次/批次：一次团购活动，可以包含多个商品
+enum UserRole {
+  BUYER
+  ADMIN
+}
+
+// 场次/批次
 model Event {
   id          String    @id @default(uuid())
-  name        String    // 比如 "2023年10月排球少年吧唧团"
-  description String?
+  name        String
   status      EventStatus @default(DRAFT)
-  startTime   DateTime? // 开团抢单时间
-  endTime     DateTime? // 截团时间
+  startTime   DateTime?
+  endTime     DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -40,58 +90,48 @@ model Event {
 }
 
 enum EventStatus {
-  DRAFT       // 草稿（正在通过 AI 上架）
-  PUBLISHED   // 已发布/预热中
-  ACTIVE      // 抢单进行中
-  CLOSED      // 截团
+  DRAFT
+  PUBLISHED
+  ACTIVE
+  CLOSED
 }
 
-// 商品：关联到具体的一个场次
+// 商品：包含热区坐标 (Human-in-the-loop)
 model Product {
   id          String   @id @default(uuid())
   eventId     String
   event       Event    @relation(fields: [eventId], references: [id])
-  name        String   // 角色名或物品名
+  name        String
   price       Decimal  @db.Decimal(10, 2)
-  stock       Int      @default(0) // 实际库存
+  stock       Int      @default(0)
 
-  // 交互式打点热区信息
-  imageUrl    String?  // 原图 URL
-  x           Float?   // 热区中心相对 X 坐标 (0-100)
-  y           Float?   // 热区中心相对 Y 坐标 (0-100)
+  imageUrl    String?
+  x           Float?
+  y           Float?
 
   orderItems  OrderItem[]
 }
 
-// 订单：包含一个用户在一次开团中抢到的汇总商品
+// Epic 4: Phased Billing - 解耦 Order 与 Payment
 model Order {
   id               String      @id @default(uuid())
   userId           String
   user             User        @relation(fields: [userId], references: [id])
+
+  // 订单级金额（商品总价，可能不含后续邮费）
   totalAmount      Decimal     @db.Decimal(10, 2)
   status           OrderStatus @default(CREATED)
 
-  // 对账核心字段
-  reconciliationCode String      @unique // 唯一对账暗号，买家拍闲鱼时填在备注
-  externalOrderId    String?     // 买家回填的第三方(闲鱼)订单号
+  // 对账暗号：买家唯一识别码，填在闲鱼备注
+  reconciliationCode String    @unique
 
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
   items            OrderItem[]
+  payments         Payment[]
 }
 
-// 订单状态机
-enum OrderStatus {
-  CREATED               // 已创建（抢单成功尚未生成总账单）
-  AWAITING_PAYMENT      // 待支付（截团后生成汇总账单，等待买家去闲鱼拍下）
-  PENDING_VERIFICATION  // 待核验（买家已回填单号，等待团长确认）
-  PAID                  // 已支付（团长核对闲鱼订单与对账暗号无误）
-  SHIPPED               // 已发货
-  CANCELLED             // 已取消
-}
-
-// 订单项：具体抢到了什么
 model OrderItem {
   id        String  @id @default(uuid())
   orderId   String
@@ -99,107 +139,236 @@ model OrderItem {
   productId String
   product   Product @relation(fields: [productId], references: [id])
   quantity  Int     @default(1)
-  price     Decimal @db.Decimal(10, 2) // 下单时的快照价格
+  price     Decimal @db.Decimal(10, 2) // 快照价格
+}
+
+// 账单/支付单：支持多次支付（定金、尾款）
+model Payment {
+  id                String        @id @default(uuid())
+  orderId           String
+  order             Order         @relation(fields: [orderId], references: [id])
+  paymentType       PaymentType   // 定金 DEPOSIT 还是 尾款 BALANCE
+
+  expectedAmount    Decimal       @db.Decimal(10, 2) // 应付金额
+  actualPaidAmount  Decimal?      @db.Decimal(10, 2) // 团长审核时填入的实际到账金额
+  differenceAmount  Decimal?      @db.Decimal(10, 2) // 差异金额 (少付记录正数缺口)
+
+  externalOrderId   String?       // 买家去闲鱼拍下后回填的订单号
+  status            PaymentStatus @default(AWAITING_PAYMENT)
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+}
+
+enum PaymentType {
+  DEPOSIT
+  BALANCE_AND_SHIPPING
+}
+
+enum OrderStatus {
+  CREATED               // 初始状态
+  AWAITING_PAYMENT      // (软锁定) 等待提交付款单号
+  PENDING_AUDIT         // (硬锁定) 单号已提交，等待团长审核
+  PAYMENT_MISMATCH      // 审核异常：发现跑单或少付钱
+  PAID_PARTIALLY        // 定金已付，尾款待付
+  PAID_COMPLETELY       // 全部付清
+  SHIPPED               // 已发货
+  CANCELLED             // 2小时超时释放 或 手动取消
+}
+
+enum PaymentStatus {
+  AWAITING_PAYMENT
+  PENDING_AUDIT
+  AUDIT_PASSED
+  AUDIT_FAILED_MISMATCH
 }
 ```
 
-## 2. Architecture & Redis Logic (防超卖核心)
+## 3. Core Logic Implementation (FastAPI)
 
-在极小库存并发抢单场景下，数据库的行锁容易导致性能瓶颈。我们需要引入 Redis 作为库存的“Source of Truth”。核心思路是利用 Redis 的单线程特性和 Lua 脚本，实现**库存检查和扣减的原子操作**。
+以下展示如何在 FastAPI 中实现严谨的订单号回填与账单审核逻辑。
 
-### Lua 脚本: 原子扣减库存
+### 接口 1: 买家回填外部订单号 (Hard Locking)
 
-在 Redis 中，每个商品库存使用一个字符串类型的 Key 表示，例如 `product:{product_id}:stock`。
-
-```lua
--- claim_stock.lua
--- KEYS[1] : 商品库存键 (例如 "product:123:stock")
--- ARGV[1] : 扣减数量 (通常为 1)
--- ARGV[2] : 用户标识 (用于幂等或限制单人限购，这里暂不复杂化，仅做基础防超卖)
-
-local stock_key = KEYS[1]
-local decrement = tonumber(ARGV[1])
-
--- 获取当前库存
-local current_stock = redis.call('GET', stock_key)
-
--- 如果键不存在，说明未初始化或商品不存在
-if not current_stock then
-    return -1 -- 商品不存在或未上架
-end
-
-current_stock = tonumber(current_stock)
-
--- 检查库存是否充足
-if current_stock >= decrement then
-    -- 扣减库存
-    local new_stock = redis.call('DECRBY', stock_key, decrement)
-    return new_stock -- 返回扣减后的剩余库存（成功）
-else
-    return -2 -- 库存不足（超卖防护）
-end
-```
-
-### FastAPI/Python 伪代码集成
+买家回填单号后，将 `AWAITING_PAYMENT` (软锁定) 推进到 `PENDING_AUDIT` (硬锁定)。
 
 ```python
-# app/services/inventory_service.py
-import redis.asyncio as redis
-from fastapi import HTTPException
+# app/api/buyer.py
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from typing import Optional
+import prisma
+from app.core.db import db # 假设 db 是初始化的 Prisma Client
 
-# 初始化 Redis 客户端
-redis_client = redis.from_url("redis://localhost:6379/0", decode_responses=True)
+router = APIRouter()
 
-# 预加载 Lua 脚本
-LUA_CLAIM_STOCK = """
-local stock_key = KEYS[1]
-local decrement = tonumber(ARGV[1])
-local current_stock = redis.call('GET', stock_key)
-if not current_stock then
-    return -1
-end
-current_stock = tonumber(current_stock)
-if current_stock >= decrement then
-    local new_stock = redis.call('DECRBY', stock_key, decrement)
-    return new_stock
-else
-    return -2
-end
-"""
-claim_script = redis_client.register_script(LUA_CLAIM_STOCK)
+class SubmitOrderRequest(BaseModel):
+    payment_id: str
+    external_order_id: str
 
-async def claim_item(user_id: str, product_id: str, quantity: int = 1):
+@router.post("/payments/submit-external-id")
+async def submit_external_order_id(req: SubmitOrderRequest, current_user = Depends(get_current_user)):
     """
-    处理抢单逻辑
+    买家在闲鱼拍下后，回填订单号。
     """
-    stock_key = f"product:{product_id}:stock"
+    async with db.tx() as tx:
+        # 1. 查询支付单，并加上排他锁（通过 Prisma 行级锁特性或应用层隔离）
+        payment = await tx.payment.find_first(
+            where={
+                "id": req.payment_id,
+                "order": {"userId": current_user.id}
+            },
+            include={"order": True}
+        )
 
-    try:
-        # 执行 Lua 脚本，保证原子性
-        result = await claim_script(keys=[stock_key], args=[quantity, user_id])
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment record not found.")
 
-        if result == -1:
-            raise HTTPException(status_code=404, detail="Product not found or not active for sale.")
-        elif result == -2:
-            raise HTTPException(status_code=400, detail="Out of stock. Better luck next time!")
+        if payment.status != "AWAITING_PAYMENT":
+            raise HTTPException(status_code=400, detail="Payment is not awaiting submission.")
 
-        # 扣减成功，此时可以安全地通过消息队列（如 Redis Streams 或 RabbitMQ）
-        # 异步落库到 PostgreSQL，生成 Order 和 OrderItem
-        await enqueue_order_creation(user_id, product_id, quantity)
+        if payment.order.status == "CANCELLED":
+             raise HTTPException(status_code=400, detail="Order has already been cancelled due to timeout.")
 
-        return {"status": "success", "remaining_stock": result}
+        # 2. 更新 Payment 状态和关联的 Order 状态 (转化为 Hard Lock)
+        await tx.payment.update(
+            where={"id": req.payment_id},
+            data={
+                "externalOrderId": req.external_order_id,
+                "status": "PENDING_AUDIT"
+            }
+        )
 
-    except redis.RedisError as e:
-        # 记录日志，系统级异常
-        # logger.error(f"Redis error during claim: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error during claiming.")
+        await tx.order.update(
+            where={"id": payment.orderId},
+            data={"status": "PENDING_AUDIT"}
+        )
 
-async def enqueue_order_creation(user_id: str, product_id: str, quantity: int):
-    # 异步写入数据库的逻辑，削峰填谷
-    pass
+        # Note: 由于进入了 PENDING_AUDIT，2小时补偿任务在检查状态时会直接忽略此订单
+
+    return {"message": "External order ID submitted successfully. Awaiting admin audit."}
 ```
 
-## 3. Human-in-the-loop (HITL) 上架方案设计
+### 接口 2: 团长极速审核 (Rapid Audit)
+
+团长对比闲鱼账单金额。如果少付钱，进入 `PAYMENT_MISMATCH`；如果足额，则推进到通过状态。
+
+```python
+# app/api/admin.py
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from decimal import Decimal
+from app.core.db import db
+
+router = APIRouter()
+
+class AuditPaymentRequest(BaseModel):
+    actual_paid_amount: Decimal
+
+@router.post("/admin/payments/{payment_id}/audit")
+async def audit_payment(payment_id: str, req: AuditPaymentRequest, current_user = Depends(get_current_admin)):
+    """
+    团长审核界面核心 API：核销金额。
+    """
+    async with db.tx() as tx:
+        payment = await tx.payment.find_unique(where={"id": payment_id}, include={"order": True})
+
+        if not payment:
+            raise HTTPException(status_code=404, detail="Payment not found")
+
+        if payment.status != "PENDING_AUDIT":
+            raise HTTPException(status_code=400, detail="Payment is not in PENDING_AUDIT status")
+
+        expected = Decimal(payment.expectedAmount)
+        actual = Decimal(req.actual_paid_amount)
+        difference = expected - actual
+
+        if actual < expected:
+            # 买家少付款 (跑单/错填)
+            await tx.payment.update(
+                where={"id": payment_id},
+                data={
+                    "status": "AUDIT_FAILED_MISMATCH",
+                    "actualPaidAmount": actual,
+                    "differenceAmount": difference
+                }
+            )
+            await tx.order.update(
+                where={"id": payment.orderId},
+                data={"status": "PAYMENT_MISMATCH"}
+            )
+            return {"status": "mismatch", "message": f"Shortfall detected: {difference}"}
+
+        else:
+            # 全额或超额付款
+            await tx.payment.update(
+                where={"id": payment_id},
+                data={
+                    "status": "AUDIT_PASSED",
+                    "actualPaidAmount": actual,
+                    "differenceAmount": difference # 如果是负数代表多付了
+                }
+            )
+
+            # 判断这是定金还是尾款，决定 Order 的最终状态
+            new_order_status = "PAID_PARTIALLY" if payment.paymentType == "DEPOSIT" else "PAID_COMPLETELY"
+
+            await tx.order.update(
+                where={"id": payment.orderId},
+                data={"status": new_order_status}
+            )
+            return {"status": "passed", "message": "Audit passed successfully."}
+```
+
+### 补偿机制: 2小时超时释放 (Compensation Mechanism)
+
+这里展示使用轻量级 `APScheduler` (或 Celery) 执行异步任务的思想：
+
+```python
+# app/workers/inventory_worker.py
+import asyncio
+import logging
+from app.core.db import db
+from app.services.inventory_service import redis_client
+
+logger = logging.getLogger(__name__)
+
+async def expire_unpaid_order(order_id: str, payment_id: str):
+    """
+    延迟任务：2小时后触发。检查订单是否未回填闲鱼单号，若是，则释放库存。
+    """
+    try:
+        async with db.tx() as tx:
+            payment = await tx.payment.find_unique(where={"id": payment_id}, include={"order": {"include": {"items": True}}})
+
+            if not payment:
+                return
+
+            # 只有当状态依然是 AWAITING_PAYMENT (买家没回填单号) 时才触发释放
+            if payment.status == "AWAITING_PAYMENT":
+                logger.warning(f"Order {order_id} timed out. Cancelling and releasing stock.")
+
+                # 1. 数据库状态更新
+                await tx.payment.update(where={"id": payment_id}, data={"status": "CANCELLED"})
+                await tx.order.update(where={"id": order_id}, data={"status": "CANCELLED"})
+
+                # 2. Redis 软锁定释放 (通过 INCR 把库存加回)
+                # 这部分需要严谨处理，使用 Redis Pipeline 保证原子性
+                pipeline = redis_client.pipeline()
+                for item in payment.order.items:
+                    stock_key = f"product:{item.productId}:stock"
+                    # 将软锁定的商品数量加回去
+                    pipeline.incrby(stock_key, item.quantity)
+
+                await pipeline.execute()
+                logger.info(f"Successfully released stock for Order {order_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to process expiry for order {order_id}: {str(e)}")
+        # 生产环境中应该有告警系统
+```
+
+## 4. Human-in-the-loop (HITL) 上架方案设计
 
 鉴于多模态大模型在处理密集重叠的二次元徽章、立牌等周边时，容易出现严重的幻觉（漏识别、角色认错、类别搞错），导致团长需要花费大量时间纠错。我们决定放弃全自动 AI 识别，采用 Human-in-the-loop (HITL) 方案。
 
