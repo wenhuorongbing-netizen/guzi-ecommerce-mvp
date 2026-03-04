@@ -87,7 +87,11 @@ export const BuyerGallery: React.FC<BuyerGalleryProps> = ({ imageUrl, products }
                 <div
                   key={product.id}
                   className="absolute"
-                  style={{ left: `${product.x}%`, top: `${product.y}%` }}
+                  style={{
+                    left: `${product.x}%`,
+                    top: `${product.y}%`,
+                    transform: 'translate(-50%, -50%)' // Handle centering here to avoid framer-motion conflicts
+                  }}
                 >
                   <motion.button
                     whileTap={!isOutOfStock ? { scale: 0.85, y: -5 } : {}}
@@ -96,7 +100,7 @@ export const BuyerGallery: React.FC<BuyerGalleryProps> = ({ imageUrl, products }
                     disabled={isOutOfStock}
                     className={`
                       relative group flex flex-col items-center justify-center
-                      min-w-[44px] min-h-[44px] -translate-x-1/2 -translate-y-1/2
+                      min-w-[44px] min-h-[44px]
                       rounded-xl shadow-xl border border-white/40
                       backdrop-blur-md overflow-visible touch-manipulation
                       transition-opacity duration-300
