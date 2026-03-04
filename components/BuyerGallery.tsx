@@ -181,6 +181,10 @@ export const BuyerGallery: React.FC<BuyerGalleryProps> = ({ imageUrl, products }
           <motion.button
             whileTap={{ scale: 0.95 }}
             disabled={totalItems === 0}
+            onClick={() => {
+                // In a real app, this opens a modal or navigates to a checkout route
+                alert(`[Checkout Guide UI]\n\nTotal: ¥${totalPrice.toFixed(2)}\nReconciliation Code: USER_X_992\n\n1. Scan Xianyu QR Code to Pay\n2. Put 'USER_X_992' in Xianyu Notes\n3. Enter Xianyu Order ID below: [ ____________ ]`);
+            }}
             className="flex-1 max-w-[200px] bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-gray-300 disabled:to-gray-400 disabled:text-gray-500 disabled:cursor-not-allowed text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-blue-500/30 transition-all text-sm uppercase tracking-wider"
           >
             Checkout

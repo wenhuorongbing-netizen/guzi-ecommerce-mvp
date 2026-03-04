@@ -123,12 +123,18 @@ export const useProductStore = create<ProductStore>((set, get) => ({
 
     let newPending = [...state.pendingItems];
     removedHotspots.forEach(removedItem => {
-      newPending.push({
-          id: removedItem.id,
-          name: removedItem.name,
-          price: removedItem.price,
-          qty: removedItem.stock
-      });
+      // Try to find if a pending chip with the same name exists to increment its qty back
+      const existingPending = newPending.find(p => p.name === removedItem.name && p.price === removedItem.price);
+      if (existingPending) {
+         existingPending.qty += 1;
+      } else {
+         newPending.push({
+             id: crypto.randomUUID(),
+             name: removedItem.name,
+             price: removedItem.price,
+             qty: 1
+         });
+      }
     });
 
     return {
@@ -142,24 +148,34 @@ export const useProductStore = create<ProductStore>((set, get) => ({
   setActiveHotspot: (id) => set({ activeHotspotId: id, activePendingItemId: null }), // Deactivate chip holding when editing map
 
   placePendingItemAsHotspot: (x, y) => {
-    const { pendingItems, activePendingItemId, addHotspot, removePendingItem } = get();
+    const { pendingItems, activePendingItemId, addHotspot, removePendingItem, setPendingItems } = get();
 
     if (!activePendingItemId) return;
 
-    const chip = pendingItems.find(p => p.id === activePendingItemId);
-    if (!chip) return;
+    const chipIndex = pendingItems.findIndex(p => p.id === activePendingItemId);
+    if (chipIndex === -1) return;
+    const chip = pendingItems[chipIndex];
 
-    // Convert to a placed hotspot
+    const newHotspotId = crypto.randomUUID();
+
+    // Convert to a placed hotspot. Note: placed hotspot gets stock=1
     addHotspot({
-      id: chip.id, // Retain ID or generate a new one if necessary
+      id: newHotspotId,
       x,
       y,
       name: chip.name,
       price: chip.price,
-      stock: chip.qty
+      stock: 1
     });
 
-    // Remove from the pending sidebar list
-    removePendingItem(chip.id);
+    if (chip.qty > 1) {
+       // Decrement quantity if more than 1
+       const updatedItems = [...pendingItems];
+       updatedItems[chipIndex] = { ...chip, qty: chip.qty - 1 };
+       setPendingItems(updatedItems);
+    } else {
+       // Remove from the pending sidebar list entirely
+       removePendingItem(chip.id);
+    }
   }
 }))
