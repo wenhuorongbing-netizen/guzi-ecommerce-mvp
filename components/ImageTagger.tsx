@@ -1,7 +1,8 @@
 "use client"
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { useProductStore } from '../store/productStore';
 import { v4 as uuidv4 } from 'uuid';
+import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 
 export const ImageTagger = () => {
   const {
@@ -13,8 +14,19 @@ export const ImageTagger = () => {
     setActiveHotspot,
     updateHotspot,
     removeHotspot,
-    placePendingItemAsHotspot
+    placePendingItemAsHotspot,
+    undoHotspot
   } = useProductStore();
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === 'z') {
+        undoHotspot();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [undoHotspot]);
 
   const imageRef = useRef<HTMLImageElement>(null);
 
@@ -56,52 +68,67 @@ export const ImageTagger = () => {
           <span className="text-sm font-medium">Upload an image to start tagging</span>
         </div>
       ) : (
-        <div className="relative inline-block max-w-full">
-          <img
-            ref={imageRef}
-            src={imageUrl}
-            alt="Merch Drop Layout"
-            onClick={handleImageClick}
-            className={`max-w-full rounded shadow ${activePendingItemId ? 'cursor-crosshair' : 'cursor-default'}`}
-            // For MVP mock purposes, fixing max-width so hotspots are easy to see
-            style={{ maxHeight: '75vh', width: 'auto' }}
-          />
+        <TransformWrapper
+          initialScale={1}
+          minScale={0.5}
+          maxScale={4}
+          centerOnInit
+          disabled={!!activePendingItemId} // Disable panning when dropping a chip
+        >
+          {({ zoomIn, zoomOut, resetTransform, centerView }) => (
+            <>
+              <div className="absolute top-2 right-2 z-10 flex gap-2 bg-white/80 backdrop-blur rounded shadow px-2 py-1">
+                <button onClick={() => zoomIn()} className="px-2 hover:bg-gray-100 rounded">+</button>
+                <button onClick={() => zoomOut()} className="px-2 hover:bg-gray-100 rounded">-</button>
+                <button onClick={() => centerView()} className="px-2 hover:bg-gray-100 rounded">Reset</button>
+                <button onClick={() => undoHotspot()} title="Ctrl+Z" className="px-2 text-red-500 hover:bg-gray-100 rounded border-l border-gray-300 ml-1">Undo</button>
+              </div>
 
-          {/* Render Hotspots */}
-          {hotspots.map((hotspot) => {
-            const isActive = activeHotspotId === hotspot.id;
+              <TransformComponent wrapperStyle={{ width: "100%", height: "100%" }}>
+                <div className="relative inline-block max-w-full">
+                  <img
+                    ref={imageRef}
+                    src={imageUrl}
+                    alt="Merch Drop Layout"
+                    onClick={handleImageClick}
+                    className={`max-w-full rounded shadow ${activePendingItemId ? 'cursor-crosshair' : 'cursor-default'}`}
+                    style={{ maxHeight: '75vh', width: 'auto' }}
+                  />
 
-            return (
-              <div
-                key={hotspot.id}
-                className={`absolute w-6 h-6 -ml-3 -mt-3 border-2 rounded-full cursor-pointer transition-transform shadow-md flex items-center justify-center text-xs font-bold ${
-                  isActive ? 'bg-blue-500 border-white scale-110 z-20 text-white' : 'bg-white border-red-500 hover:scale-110 z-10 text-red-500'
-                }`}
-                style={{ left: `${hotspot.x}%`, top: `${hotspot.y}%` }}
-                onClick={(e) => {
-                  e.stopPropagation(); // Prevent creating a new hotspot underneath
-                  setActiveHotspot(hotspot.id);
-                }}
-                title={hotspot.name}
-              >
-                {/* Visual marker inside dot */}
-                {hotspot.stock > 0 ? hotspot.stock : '!'}
+                  {/* Render Hotspots */}
+                  {hotspots.map((hotspot) => {
+                    const isActive = activeHotspotId === hotspot.id;
 
-                {/* Popover Form (if active) */}
-                {isActive && (
-                  <div
-                    className="absolute top-8 left-1/2 -translate-x-1/2 bg-white p-3 rounded shadow-xl border w-56 z-30"
-                    onClick={handleInputClick}
-                  >
-                    <div className="flex justify-between items-center mb-2 border-b pb-1">
-                      <span className="text-xs font-semibold text-gray-700 truncate w-32">{hotspot.name || 'Edit Product'}</span>
-                      <button
-                        onClick={() => removeHotspot(hotspot.id)}
-                        className="text-red-500 text-xs hover:text-red-700 hover:bg-red-50 px-1 rounded transition-colors"
+                    return (
+                      <div
+                        key={hotspot.id}
+                        className={`absolute w-8 h-8 -ml-4 -mt-4 border-2 rounded-full cursor-move transition-transform shadow-md flex items-center justify-center text-xs font-bold ${
+                          isActive ? 'bg-blue-500 border-white scale-110 z-20 text-white' : 'bg-black/50 backdrop-blur-md border-white/50 hover:scale-110 z-10 text-white'
+                        }`}
+                        style={{ left: `${hotspot.x}%`, top: `${hotspot.y}%`, textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveHotspot(hotspot.id);
+                        }}
+                        title={hotspot.name}
                       >
-                        Delete
-                      </button>
-                    </div>
+                        {hotspot.stock > 0 ? hotspot.stock : '!'}
+
+                        {/* Popover Form (if active) */}
+                        {isActive && (
+                          <div
+                            className="absolute top-10 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-lg p-3 rounded-lg shadow-2xl border w-56 z-30 text-gray-800"
+                            onClick={handleInputClick}
+                          >
+                            <div className="flex justify-between items-center mb-2 border-b pb-1">
+                              <span className="text-xs font-semibold text-gray-700 truncate w-32">{hotspot.name || 'Edit Product'}</span>
+                              <button
+                                onClick={() => removeHotspot(hotspot.id)}
+                                className="text-red-500 text-xs hover:text-red-700 hover:bg-red-50 px-1 rounded transition-colors font-bold"
+                              >
+                                Delete
+                              </button>
+                            </div>
 
                     <div className="space-y-2 mt-2">
                       <div>
@@ -146,12 +173,16 @@ export const ImageTagger = () => {
                         Done
                       </button>
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </TransformComponent>
+            </>
+          )}
+        </TransformWrapper>
       )}
     </div>
   );

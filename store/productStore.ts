@@ -25,6 +25,7 @@ interface ProductStore {
 
   // Placed items on the image
   hotspots: Hotspot[];
+  history: Hotspot[][]; // For Undo functionality
   activeHotspotId: string | null; // Currently editing on the image
 
   // Actions
@@ -41,6 +42,8 @@ interface ProductStore {
 
   // Point-and-Click Integration action
   placePendingItemAsHotspot: (x: number, y: number) => void;
+  undoHotspot: () => void;
+  saveHistory: () => void;
 }
 
 export const useProductStore = create<ProductStore>((set, get) => ({
@@ -50,9 +53,10 @@ export const useProductStore = create<ProductStore>((set, get) => ({
   activePendingItemId: null,
 
   hotspots: [],
+  history: [],
   activeHotspotId: null,
 
-  setImageUrl: (url) => set({ imageUrl: url, hotspots: [], pendingItems: [], activeHotspotId: null, activePendingItemId: null }),
+  setImageUrl: (url) => set({ imageUrl: url, hotspots: [], history: [], pendingItems: [], activeHotspotId: null, activePendingItemId: null }),
 
   setPendingItems: (items) => set({ pendingItems: items }),
 
@@ -63,21 +67,77 @@ export const useProductStore = create<ProductStore>((set, get) => ({
     activePendingItemId: state.activePendingItemId === id ? null : state.activePendingItemId
   })),
 
-  setHotspots: (hotspots) => set({ hotspots }),
+  setHotspots: (hotspots) => set(state => {
+    state.saveHistory();
+    return { hotspots };
+  }),
 
-  addHotspot: (hotspot) => set((state) => ({
-    hotspots: [...state.hotspots, hotspot],
-    activeHotspotId: hotspot.id // Select the newly created hotspot
-  })),
+  addHotspot: (hotspot) => set((state) => {
+    state.saveHistory();
+    return {
+      hotspots: [...state.hotspots, hotspot],
+      activeHotspotId: hotspot.id // Select the newly created hotspot
+    }
+  }),
 
-  updateHotspot: (id, data) => set((state) => ({
-    hotspots: state.hotspots.map((hs) => hs.id === id ? { ...hs, ...data } : hs)
-  })),
+  updateHotspot: (id, data) => set((state) => {
+    state.saveHistory();
+    return {
+      hotspots: state.hotspots.map((hs) => hs.id === id ? { ...hs, ...data } : hs)
+    }
+  }),
 
-  removeHotspot: (id) => set((state) => ({
-    hotspots: state.hotspots.filter((hs) => hs.id !== id),
-    activeHotspotId: state.activeHotspotId === id ? null : state.activeHotspotId
-  })),
+  removeHotspot: (id) => set((state) => {
+    state.saveHistory();
+    // Re-add to pending list if it was a chip
+    const removedItem = state.hotspots.find(h => h.id === id);
+    let newPending = [...state.pendingItems];
+    if (removedItem) {
+        newPending.push({
+            id: removedItem.id,
+            name: removedItem.name,
+            price: removedItem.price,
+            qty: removedItem.stock
+        });
+    }
+    return {
+      hotspots: state.hotspots.filter((hs) => hs.id !== id),
+      activeHotspotId: state.activeHotspotId === id ? null : state.activeHotspotId,
+      pendingItems: newPending
+    }
+  }),
+
+  saveHistory: () => set(state => {
+    const newHistory = [...state.history, [...state.hotspots]];
+    // Keep max 20 states
+    if (newHistory.length > 20) newHistory.shift();
+    return { history: newHistory };
+  }),
+
+  undoHotspot: () => set(state => {
+    if (state.history.length === 0) return state;
+    const previousState = state.history[state.history.length - 1];
+
+    // Find what was removed by this undo operation
+    const removedHotspots = state.hotspots.filter(h => !previousState.find(ph => ph.id === h.id));
+
+    let newPending = [...state.pendingItems];
+    removedHotspots.forEach(removedItem => {
+      newPending.push({
+          id: removedItem.id,
+          name: removedItem.name,
+          price: removedItem.price,
+          qty: removedItem.stock
+      });
+    });
+
+    return {
+      hotspots: previousState,
+      history: state.history.slice(0, -1),
+      pendingItems: newPending,
+      activeHotspotId: null
+    };
+  }),
 
   setActiveHotspot: (id) => set({ activeHotspotId: id, activePendingItemId: null }), // Deactivate chip holding when editing map
 
