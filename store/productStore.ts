@@ -1,5 +1,12 @@
 import { create } from 'zustand'
 
+export interface PendingItem {
+  id: string; // generated via uuidv4
+  name: string;
+  price: number;
+  qty: number; // Always 1 per instance based on the parser rules
+}
+
 export interface Hotspot {
   id: string; // generated via uuidv4
   x: number;
@@ -11,23 +18,50 @@ export interface Hotspot {
 
 interface ProductStore {
   imageUrl: string | null;
-  hotspots: Hotspot[];
-  activeHotspotId: string | null;
 
+  // Text-to-Chips state
+  pendingItems: PendingItem[];
+  activePendingItemId: string | null;
+
+  // Placed items on the image
+  hotspots: Hotspot[];
+  activeHotspotId: string | null; // Currently editing on the image
+
+  // Actions
   setImageUrl: (url: string) => void;
+  setPendingItems: (items: PendingItem[]) => void;
+  setActivePendingItem: (id: string | null) => void;
+  removePendingItem: (id: string) => void;
+
   setHotspots: (hotspots: Hotspot[]) => void;
   addHotspot: (hotspot: Hotspot) => void;
   updateHotspot: (id: string, data: Partial<Hotspot>) => void;
   removeHotspot: (id: string) => void;
   setActiveHotspot: (id: string | null) => void;
+
+  // Point-and-Click Integration action
+  placePendingItemAsHotspot: (x: number, y: number) => void;
 }
 
-export const useProductStore = create<ProductStore>((set) => ({
+export const useProductStore = create<ProductStore>((set, get) => ({
   imageUrl: null,
+
+  pendingItems: [],
+  activePendingItemId: null,
+
   hotspots: [],
   activeHotspotId: null,
 
-  setImageUrl: (url) => set({ imageUrl: url, hotspots: [], activeHotspotId: null }),
+  setImageUrl: (url) => set({ imageUrl: url, hotspots: [], pendingItems: [], activeHotspotId: null, activePendingItemId: null }),
+
+  setPendingItems: (items) => set({ pendingItems: items }),
+
+  setActivePendingItem: (id) => set({ activePendingItemId: id, activeHotspotId: null }), // Deactivate map editing when holding a chip
+
+  removePendingItem: (id) => set((state) => ({
+    pendingItems: state.pendingItems.filter((item) => item.id !== id),
+    activePendingItemId: state.activePendingItemId === id ? null : state.activePendingItemId
+  })),
 
   setHotspots: (hotspots) => set({ hotspots }),
 
@@ -45,5 +79,27 @@ export const useProductStore = create<ProductStore>((set) => ({
     activeHotspotId: state.activeHotspotId === id ? null : state.activeHotspotId
   })),
 
-  setActiveHotspot: (id) => set({ activeHotspotId: id })
+  setActiveHotspot: (id) => set({ activeHotspotId: id, activePendingItemId: null }), // Deactivate chip holding when editing map
+
+  placePendingItemAsHotspot: (x, y) => {
+    const { pendingItems, activePendingItemId, addHotspot, removePendingItem } = get();
+
+    if (!activePendingItemId) return;
+
+    const chip = pendingItems.find(p => p.id === activePendingItemId);
+    if (!chip) return;
+
+    // Convert to a placed hotspot
+    addHotspot({
+      id: chip.id, // Retain ID or generate a new one if necessary
+      x,
+      y,
+      name: chip.name,
+      price: chip.price,
+      stock: chip.qty
+    });
+
+    // Remove from the pending sidebar list
+    removePendingItem(chip.id);
+  }
 }))
