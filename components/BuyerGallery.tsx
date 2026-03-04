@@ -22,6 +22,11 @@ export const BuyerGallery: React.FC<BuyerGalleryProps> = ({ imageUrl, products }
   const [cart, setCart] = useState<{product: GalleryProduct, qty: number}[]>([]);
   const [showToast, setShowToast] = useState<{id: string, message: string} | null>(null);
 
+  // Sprint 4: Checkout UI States
+  const [showCheckoutModal, setShowCheckoutModal] = useState(false);
+  const [xianyuOrderId, setXianyuOrderId] = useState("");
+  const dummyReconciliationCode = "USER_X_992"; // In reality, fetch from backend order creation
+
   const handleClaim = (product: GalleryProduct, e: React.MouseEvent) => {
     e.stopPropagation();
     if (product.stock <= 0) return;
@@ -181,10 +186,7 @@ export const BuyerGallery: React.FC<BuyerGalleryProps> = ({ imageUrl, products }
           <motion.button
             whileTap={{ scale: 0.95 }}
             disabled={totalItems === 0}
-            onClick={() => {
-                // In a real app, this opens a modal or navigates to a checkout route
-                alert(`[Checkout Guide UI]\n\nTotal: ¥${totalPrice.toFixed(2)}\nReconciliation Code: USER_X_992\n\n1. Scan Xianyu QR Code to Pay\n2. Put 'USER_X_992' in Xianyu Notes\n3. Enter Xianyu Order ID below: [ ____________ ]`);
-            }}
+            onClick={() => setShowCheckoutModal(true)}
             className="flex-1 max-w-[200px] bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:from-gray-300 disabled:to-gray-400 disabled:text-gray-500 disabled:cursor-not-allowed text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-blue-500/30 transition-all text-sm uppercase tracking-wider"
           >
             Checkout
@@ -192,6 +194,96 @@ export const BuyerGallery: React.FC<BuyerGalleryProps> = ({ imageUrl, products }
 
         </div>
       </div>
+
+      {/* Sprint 4: Checkout Guide Modal */}
+      <AnimatePresence>
+        {showCheckoutModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="bg-white text-gray-900 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col"
+            >
+              {/* Modal Header */}
+              <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-6 text-center text-white">
+                <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+                </div>
+                <h2 className="text-2xl font-extrabold tracking-tight">Order Reserved!</h2>
+                <p className="text-blue-100 text-sm mt-1">Please complete payment within 2 hours</p>
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-6 space-y-5">
+
+                {/* Total Amount & Warning */}
+                <div className="text-center">
+                  <div className="text-sm text-gray-500 font-medium">Total Amount</div>
+                  <div className="text-3xl font-black text-gray-900">¥ {totalPrice.toFixed(2)}</div>
+                  <div className="mt-2 text-xs font-semibold text-amber-600 bg-amber-50 p-2 rounded-lg border border-amber-200">
+                    ⚠️ 团长将按闲鱼单号对应的地址发货，请确保地址无误！
+                  </div>
+                </div>
+
+                {/* Reconciliation Code */}
+                <div className="bg-gray-50 rounded-xl p-4 border border-gray-200 relative">
+                  <div className="text-xs text-gray-500 font-semibold mb-1 uppercase tracking-wide">Reconciliation Code (闲鱼备注)</div>
+                  <div className="font-mono text-lg font-bold text-blue-600 truncate">{dummyReconciliationCode}</div>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(dummyReconciliationCode);
+                      alert("Copied to clipboard!");
+                    }}
+                    className="absolute top-1/2 right-4 -translate-y-1/2 bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 text-xs px-3 py-1.5 rounded-lg shadow-sm font-medium transition-colors"
+                  >
+                    Copy
+                  </button>
+                </div>
+
+                {/* Submit Xianyu ID */}
+                <div className="space-y-2">
+                  <label className="text-xs text-gray-700 font-bold uppercase tracking-wide">Enter Xianyu Order ID</label>
+                  <input
+                    type="text"
+                    placeholder="e.g., 202310129988..."
+                    value={xianyuOrderId}
+                    onChange={(e) => setXianyuOrderId(e.target.value)}
+                    className="w-full bg-gray-50 border border-gray-300 text-gray-900 rounded-xl p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  />
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-4 bg-gray-50 border-t border-gray-100 flex gap-3">
+                <button
+                  onClick={() => setShowCheckoutModal(false)}
+                  className="flex-1 bg-white text-gray-700 border border-gray-300 font-bold py-3 rounded-xl hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  disabled={!xianyuOrderId}
+                  onClick={() => {
+                    alert(`Submitted Order ID: ${xianyuOrderId}`);
+                    setShowCheckoutModal(false);
+                    setCart([]); // Clear cart on success
+                  }}
+                  className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-md transition-colors"
+                >
+                  Submit
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
     </div>
   );
 };

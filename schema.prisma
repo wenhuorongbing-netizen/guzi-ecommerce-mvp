@@ -11,14 +11,20 @@ datasource db {
 
 // Epic 1: Secure & Lightweight Auth
 model User {
-  id           String   @id @default(uuid())
-  nickname     String   @unique
-  hashedPin    String   // 存储 bcrypt Hash 后的 6位数字 PIN
-  role         UserRole @default(BUYER)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id            String   @id @default(uuid())
+  nickname      String   @unique
+  hashedPin     String   // 存储 bcrypt Hash 后的 6位数字 PIN
+  role          UserRole @default(BUYER)
 
-  orders       Order[]
+  // Sprint 4: Admin Trust & Profile
+  trustScore    Int      @default(0)
+  bio           String?  // 代购须知
+  xianyuHomeUrl String?  // 闲鱼主页链接
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  orders        Order[]
 }
 
 enum UserRole {
@@ -121,6 +127,7 @@ enum OrderStatus {
   AWAITING_PAYMENT      // (软锁定) 等待提交付款单号
   PENDING_AUDIT         // (硬锁定) 单号已提交，等待团长审核
   PAYMENT_MISMATCH      // 审核异常：发现跑单或少付钱
+  PAID                  // 已支付 (Sprint 4)
   PAID_PARTIALLY        // 定金已付，尾款待付
   PAID_COMPLETELY       // 全部付清
   SHIPPED               // 已发货
