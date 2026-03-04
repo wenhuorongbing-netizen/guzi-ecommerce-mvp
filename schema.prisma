@@ -54,18 +54,21 @@ enum EventStatus {
 
 // 商品：包含热区坐标 (Human-in-the-loop)
 model Product {
-  id          String   @id @default(uuid())
-  eventId     String
-  event       Event    @relation(fields: [eventId], references: [id])
-  name        String
-  price       Decimal  @db.Decimal(10, 2)
-  stock       Int      @default(0)
+  id                String   @id @default(uuid())
+  eventId           String
+  event             Event    @relation(fields: [eventId], references: [id])
+  name              String
+  price             Decimal  @db.Decimal(10, 2)
+  stock             Int      @default(0)
 
-  imageUrl    String?
-  x           Float?
-  y           Float?
+  // Sprint 6: 捆绑规则，例如 "COLD_ITEM_ID:1" 表示拍下此热门款必须带走1件冷门款
+  bundleRequirement String?
 
-  orderItems  OrderItem[]
+  imageUrl          String?
+  x                 Float?
+  y                 Float?
+
+  orderItems        OrderItem[]
 }
 
 // Epic 4: Phased Billing - 解耦 Order 与 Payment

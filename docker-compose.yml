@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: guzi_user
+      POSTGRES_PASSWORD: guzi_password
+      POSTGRES_DB: guzi_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://guzi_user:guzi_password@db:5432/guzi_db
+      - REDIS_URL=redis://redis:6379/0
+      - JWT_SECRET_KEY=change-this-in-production
+      - LLM_API_URL=https://api.openai.com/v1/chat/completions
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - db
+      - redis
+    command: >
+      sh -c "prisma db push && python scripts/init_db.py && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  postgres_data:

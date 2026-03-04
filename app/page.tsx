@@ -115,6 +115,28 @@ export default function Home() {
             <p className="text-gray-500 font-medium">Text-to-Chips & Point-and-Click Mapping UI</p>
           </div>
           <div className="flex gap-4">
+            {/* Sprint 6: Generate Announcement */}
+            <button
+              onClick={async () => {
+                try {
+                  const res = await fetch(`http://localhost:8000/api/admin/events/${eventId}/notif-template`);
+                  const data = await res.json();
+                  if (res.ok) {
+                    navigator.clipboard.writeText(data.template);
+                    alert("Notification text copied to clipboard!");
+                  } else {
+                    alert("Failed to generate template.");
+                  }
+                } catch (e) {
+                  alert("Network error.");
+                }
+              }}
+              className="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 font-bold py-2 px-4 rounded-md shadow-sm transition-all flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
+              Announce
+            </button>
+
             {/* Sprint 5: Export CSV Button */}
             <button
               onClick={() => window.open(`http://localhost:8000/api/admin/events/${eventId}/export`, '_blank')}
